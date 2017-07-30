@@ -31,11 +31,11 @@ def main():
     parser = argparse.ArgumentParser(description="Automatically generates config files for YouCompleteMe")
     parser.add_argument("-v", "--verbose", action="store_true", help="Show output from build process")
     parser.add_argument("-f", "--force", action="store_true", help="Overwrite the file if it exists.")
-    parser.add_argument("-F", "--format", choices=["ycm", "cc"], default="ycm", help="Format of output file (YouCompleteMe or color_coded). Default: ycm")
+    parser.add_argument("-F", "--format", choices=["ycm", "cc", "all"], default="ycm", help="Format of output file (YouCompleteMe or color_coded). Default: ycm")
     parser.add_argument("-M", "--make-flags", help="Flags to pass to make when fake-building. Default: -M=\"{}\"".format(" ".join(default_make_flags)))
     parser.add_argument("-o", "--output", help="Save the config file as OUTPUT. Default: .ycm_extra_conf.py, or .color_coded if --format=cc.")
     parser.add_argument("-m", "--module", default="bionic/libc", help="Choose specific module to build/generate flags for. Default: all")
-    parser.add_argument("-p", "--force-include-prefix", help="Prefix path to be concatenated to each include path flag. Default: aosp_dir")
+    parser.add_argument("-p", "--include-prefix", help="Prefix path to be concatenated to each include path flag. Default: aosp_dir")
     parser.add_argument("AOSP_DIR", help="The root directory of the project.")
     args = vars(parser.parse_args())
     aosp_dir = os.path.abspath(args["AOSP_DIR"])
@@ -49,62 +49,61 @@ def main():
     if(sys.platform.startswith("win32")):
         print("ERROR: Windows is not supported")
 
-    # prompt user to overwrite existing file (if necessary)
-    config_file = {
-        "cc":  os.path.join(aosp_dir, args["module"], ".color_coded"),
-        "ycm": os.path.join(aosp_dir, args["module"], ".ycm_extra_conf.py"),
-    }[args["format"]]
-
-    if(os.path.exists(config_file) and not args["force"]):
-        print("'{}' already exists. Overwrite? [y/N] ".format(config_file)),
-        response = sys.stdin.readline().strip().lower()
-
-        if(response != "y" and response != "yes"):
-            return 1
-
-    include_path_prefix = aosp_dir if args["force_include_prefix"] is None else args["force_include_prefix"]
+    force = args["force"]
+    include_path_prefix = aosp_dir if args["include_prefix"] is None else args["include_prefix"]
+    outformat = args.pop("format")
+    formats = [ "ycm", "cc" ] if outformat == "all" else [ outformat ]
 
     # command-line args to pass to fake_build() using kwargs
     args["make_flags"] = default_make_flags if args["make_flags"] is None else shlex.split(args["make_flags"])
-    output_format = args.pop("format")
     del args["force"]
     del args["output"]
-    del args["force_include_prefix"]
+    del args["include_prefix"]
     del args["AOSP_DIR"]
 
-    generate_conf = {
-        "ycm": generate_ycm_conf,
-        "cc":  generate_cc_conf,
-    }[output_format]
-
     tmp_dir=os.path.join(ycm_generator_dir, "logs")
-    # temporary files to hold build logs
     with tempfile.NamedTemporaryFile(mode="rw", dir=tmp_dir, delete=False) as build_log:
-        print("==> Build log: {}".format(build_log.name))
-        print("==> Output file: {}".format(config_file))
 
-        # perform the actual compilation of flags
         fake_build(aosp_dir, build_log, **args)
-        (c_count, c_skip, c_flags) = parse_flags(build_log, include_path_prefix)
+        print("## Processing compile flags...")
+        (count, skipped, flags) = parse_flags(build_log, include_path_prefix)
 
-        print("Collected {} relevant entries for C compilation ({} discarded).".format(c_count, c_skip))
-        # print("Collected {} relevant entries for C++ compilation ({} discarded).".format(cxx_count, cxx_skip))
+        for output_format in formats:
+            config_file = {
+                "cc":  os.path.join(aosp_dir, args["module"], ".color_coded"),
+                "ycm": os.path.join(aosp_dir, args["module"], ".ycm_extra_conf.py"),
+            }[output_format]
 
-        if(c_count == 0):
-            print("")
-            print("ERROR: No commands were logged to the build logs (flags: {}).".format(build_log.name))
-            print("Your build system may not be compatible.")
+            print("## Generating file '{}'".format(config_file))
+            if(os.path.exists(config_file) and not force):
+                while True:
+                    print("## File already exists. Overwrite? [y/n] ".format(config_file)),
+                    response = sys.stdin.readline().strip().lower()
+                    if (response == "y" or response == "yes"):
+                        break
+                    if (response == "n" or response == "no"):
+                        return 1
 
-            if(not args["verbose"]):
+            generate_conf = {
+                "ycm": generate_ycm_conf,
+                "cc":  generate_cc_conf,
+            }[output_format]
+
+            print("## Collected {} relevant entries for compilation ({} discarded).".format(count, skipped))
+            if(count == 0):
                 print("")
-                print("Try running with the --verbose flag to see build system output - the most common cause of this is a hardcoded compiler path.")
+                print("ERROR: No commands were logged to the build logs (flags: {}).".format(build_log.name))
+                print("ERROR: Your build system may not be compatible.")
 
-            build_log.delete = False
-            return 3
+                if(not args["verbose"]):
+                    print("")
+                    print("Try running with the --verbose flag to see build system output - the most common cause of this is a hardcoded compiler path.")
 
-        lang, flags = ("c++", c_flags)
-        generate_conf(["-x", lang] + flags, config_file)
-        print("Created {} config file with {} {} flags".format(output_format.upper(), len(flags), lang.upper()))
+                build_log.delete = False
+                return 3
+
+            generate_conf(flags, config_file)
+            print("## Created {} config file with {} C++ flags".format(output_format.upper(), len(flags)))
 
 
 def fake_build(aosp_dir, build_log, verbose, make_flags, module):
@@ -115,8 +114,6 @@ def fake_build(aosp_dir, build_log, verbose, make_flags, module):
     verbose: show the build process output
     make_flags: additional flags for make
     '''
-
-    # TODO: add Windows support
     assert(not sys.platform.startswith("win32"))
 
     # environment variables and arguments for build process
@@ -128,34 +125,25 @@ def fake_build(aosp_dir, build_log, verbose, make_flags, module):
         "stdout": build_log
     }
     proc_opts["cwd"] = aosp_dir
-
-    # TODO remove preserve-env option
     env = os.environ
 
     # helper function to display exact commands used
     def run(cmd, *args, **kwargs):
-        print("$ " + " ".join(cmd))
+        # print("$ " + " ".join(cmd))
         subprocess.call(cmd, *args, **kwargs)
 
     # Just a sanity check
     if os.path.exists(os.path.join(aosp_dir, "build/envsetup.sh")):
-        # make
-        # needs to be handled last, since other build systems can generate Makefiles
-        print("Preparing build directory...")
+        print("## Preparing build directory...")
         run(["make", "-C", aosp_dir, "clean"], env=env, **proc_opts)
-
         module_flag = "BUILD_MODULES_IN_PATHS={}".format(module)
-        make_args = [ "make", "-j6", "-n", "-C", aosp_dir, "-f", "build/core/main.mk", "all_modules", module_flag ]
-
-        print("\nRunning build command...")
+        make_args = [ "make" ] + make_flags + [ "-n", "-C", aosp_dir, "-f", "build/core/main.mk", "all_modules", module_flag ]
+        print("## Getting compile flags (this may take some time)...")
         run(make_args, env=env, **proc_opts)
-
     else:
         print("ERROR: Unknown build system")
         sys.exit(2)
-
-    print("Build completed in {} sec".format(round(time.time() - started, 2)))
-    print("")
+    print("## Build completed in {} sec".format(round(time.time() - started, 2)))
 
 
 def parse_flags(build_log, include_path_prefix):
@@ -180,7 +168,8 @@ def parse_flags(build_log, include_path_prefix):
     # -warnings (-Werror), but no assembler, etc. flags (-Wa,-option)
     # -language (-std=gnu99) and standard library (-nostdlib)
     # -word size (-m64)
-    flags_whitelist = ["-[iIDF].*", "-W[^,]*", "-std=[a-z0-9+]+", "-(no)?std(lib|inc)", "-m[0-9]+"]
+    # flags_whitelist = ["-[iIDF].*", "-W[^,]*", "-std=[a-z0-9+]+", "-(no)?std(lib|inc)", "-m[0-9]+"]
+    flags_whitelist = ["-[iIDF].*", "-W[^,]*", "-(no)?std(lib|inc)", "-m[0-9]+"]
     flags_whitelist = re.compile("|".join(map("^{}$".format, flags_whitelist)))
     flags = set()
     line_count = 0
@@ -191,6 +180,7 @@ def parse_flags(build_log, include_path_prefix):
 
     # Used to only bundle filenames with applicable arguments
     filename_flags = ["-o", "-I", "-isystem", "-iquote", "-include", "-imacros", "-isysroot"]
+    invalid_include_regex = re.compile("(^.*out/.+_intermediates.*$)|(.+/proguard.flags$)")
 
     # Process build log
     for line in build_log:
@@ -218,12 +208,14 @@ def parse_flags(build_log, include_path_prefix):
             # include arguments for this option, if there are any, as a tuple
             if(i != len(words) - 1 and word in filename_flags and words[i + 1][0] != '-'):
                 p = os.path.join(include_path_prefix, words[i+1])
-                flags.add((word, p))
+                if not invalid_include_regex.match(p):
+                    flags.add((word, p))
             else:
                 if word.startswith("-I"):
                     opt = word[0:2]
                     p = os.path.join(include_path_prefix, word[2:])
-                    flags.add(opt + p)
+                    if not invalid_include_regex.match(p):
+                        flags.add(opt + p)
                 else:
                     flags.add(word)
 
@@ -246,7 +238,12 @@ def parse_flags(build_log, include_path_prefix):
 
         flags.add("-D{}={}".format(name, values[0]))
 
-    return (line_count, skip_count, sorted(flags))
+    # TODO: what about C Flags?)
+    # TODO: forcing c++11 for now (fix when
+    # handle properly C and C++ flags
+    cpp_extra_flags = [ "-x", "c++", "-std=c++11" ]
+    flags = cpp_extra_flags + sorted(flags)
+    return (line_count, skip_count, flags)
 
 
 def generate_cc_conf(flags, config_file):
