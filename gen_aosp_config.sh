@@ -8,16 +8,22 @@ aosp_root="/aosp"
 ccache=${aosp_root}/prebuilts/misc/linux-x86/ccache/ccache
 aosp_root_host=${1:-/home/nick/projects/oma/src/aosp-src/aosp}
 opts=(
-    '--forma=all'
+    #'--format=all'
+    '--format=cdb'
     '--module=packages/apps/OMA-DM'
     "--include-prefix=${aosp_root_host}"
     --verbose "${aosp_root}" )
 
-echo "# Loading build env"
-source ${aosp_root}/build/envsetup.sh >/dev/null
+load_buildenv=0
 
-echo "# Configuring x86 build"
-lunch aosp_x86-eng >/dev/null
+if (( $load_buildenv )); then
+    echo "# Loading build env"
+    source ${aosp_root}/build/envsetup.sh >/dev/null
+
+    echo "# Configuring x86 build"
+    lunch aosp_x86-eng >/dev/null
+fi
+
 unset -v USE_CCACHE
 mkdir -p ${scriptdir}/logs
 
