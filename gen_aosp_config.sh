@@ -14,11 +14,11 @@ opts=(
     --verbose "${aosp_root}" )
 
 echo "# Loading build env"
-${ccache} -M 10G >/dev/null
 source ${aosp_root}/build/envsetup.sh >/dev/null
 
 echo "# Configuring x86 build"
 lunch aosp_x86-eng >/dev/null
+unset -v USE_CCACHE
 mkdir -p ${scriptdir}/logs
 
 echo "# Generating YCM/ColorCoded files..."

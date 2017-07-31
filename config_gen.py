@@ -31,7 +31,7 @@ def main():
     parser = argparse.ArgumentParser(description="Automatically generates config files for YouCompleteMe")
     parser.add_argument("-v", "--verbose", action="store_true", help="Show output from build process")
     parser.add_argument("-f", "--force", action="store_true", help="Overwrite the file if it exists.")
-    parser.add_argument("-F", "--format", choices=["ycm", "cc", "all"], default="ycm", help="Format of output file (YouCompleteMe or color_coded). Default: ycm")
+    parser.add_argument("-F", "--format", choices=["ycm", "cc", "clang", "all"], default="ycm", help="Format of output file (YouCompleteMe or color_coded). Default: ycm")
     parser.add_argument("-M", "--make-flags", help="Flags to pass to make when fake-building. Default: -M=\"{}\"".format(" ".join(default_make_flags)))
     parser.add_argument("-o", "--output", help="Save the config file as OUTPUT. Default: .ycm_extra_conf.py, or .color_coded if --format=cc.")
     parser.add_argument("-m", "--module", default="bionic/libc", help="Choose specific module to build/generate flags for. Default: all")
@@ -52,7 +52,7 @@ def main():
     force = args["force"]
     include_path_prefix = aosp_dir if args["include_prefix"] is None else args["include_prefix"]
     outformat = args.pop("format")
-    formats = [ "ycm", "cc" ] if outformat == "all" else [ outformat ]
+    formats = [ "ycm", "cc", "clang" ] if outformat == "all" else [ outformat ]
 
     # command-line args to pass to fake_build() using kwargs
     args["make_flags"] = default_make_flags if args["make_flags"] is None else shlex.split(args["make_flags"])
@@ -72,6 +72,7 @@ def main():
             config_file = {
                 "cc":  os.path.join(aosp_dir, args["module"], ".color_coded"),
                 "ycm": os.path.join(aosp_dir, args["module"], ".ycm_extra_conf.py"),
+                "clang": os.path.join(aosp_dir, args["module"], ".clang"),
             }[output_format]
 
             print("## Generating file '{}'".format(config_file))
@@ -87,6 +88,7 @@ def main():
             generate_conf = {
                 "ycm": generate_ycm_conf,
                 "cc":  generate_cc_conf,
+                "clang":  generate_clang_conf,
             }[output_format]
 
             print("## Collected {} relevant entries for compilation ({} discarded).".format(count, skipped))
@@ -134,10 +136,9 @@ def fake_build(aosp_dir, build_log, verbose, make_flags, module):
 
     # Just a sanity check
     if os.path.exists(os.path.join(aosp_dir, "build/envsetup.sh")):
-        print("## Preparing build directory...")
-        run(["make", "-C", aosp_dir, "clean"], env=env, **proc_opts)
         module_flag = "BUILD_MODULES_IN_PATHS={}".format(module)
-        make_args = [ "make" ] + make_flags + [ "-n", "-C", aosp_dir, "-f", "build/core/main.mk", "all_modules", module_flag ]
+        make_args = [ "make" ] + make_flags + [ "-Bnk", "-C", aosp_dir, "-f",
+                "build/core/main.mk", "all_modules", module_flag ]
         print("## Getting compile flags (this may take some time)...")
         run(make_args, env=env, **proc_opts)
     else:
@@ -259,6 +260,22 @@ def generate_cc_conf(flags, config_file):
             else: # is tuple
                 for f in flag:
                     output.write(f + "\n")
+
+
+def generate_clang_conf(flags, config_file):
+    '''Generates the .clang file
+
+    flags: the list of flags
+    config_file: the path to save the configuration file at'''
+
+    with open(config_file, "w") as output:
+        output.write("flags=")
+        for flag in flags:
+            if(isinstance(flag, basestring)):
+                output.write(flag + " ")
+            else: # is tuple
+                for f in flag:
+                    output.write(f + " ")
 
 
 def generate_ycm_conf(flags, config_file):
